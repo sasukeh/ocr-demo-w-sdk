@@ -1,0 +1,28 @@
+<policies>
+    <inbound>
+        <base />
+        <set-backend-service base-url="{{cv-primary-endpoint}}" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+            <value>{{cv-primary-key}}</value>
+        </set-header>
+        <set-header name="X-APIM-Request-Id" exists-action="override">
+            <value>@(context.RequestId)</value>
+        </set-header>
+    </inbound>
+    <backend>
+        <retry condition="@(context.Response.StatusCode >= 500)" count="2" interval="1" max-interval="10" delta="1" />
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <set-header name="X-Served-By-Backend" exists-action="override">
+            <value>cv-ocr-demo-je-primary</value>
+        </set-header>
+        <set-header name="X-APIM-Processing-Time" exists-action="override">
+            <value>@(context.Elapsed.TotalMilliseconds.ToString())</value>
+        </set-header>
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

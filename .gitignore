@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Environment files (keep templates)
+.env
+.env.*
+!.env.example
+!.env*.template
+
+# Test results and logs
+*.json
+!**/apim/*.json
+*.log
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Azure
+*.azureauth
+
+# Temporary files
+*.tmp
+*.bak

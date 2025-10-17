@@ -1,0 +1,191 @@
+<policies>
+    <inbound>
+        <base />
+        
+        <!-- サーキットブレーカーの状態を確認 -->
+        <cache-lookup-value key="circuit-state-primary" variable-name="primaryCircuitState" />
+        <cache-lookup-value key="circuit-state-secondary" variable-name="secondaryCircuitState" />
+        <cache-lookup-value key="circuit-state-tertiary" variable-name="tertiaryCircuitState" />
+        
+        <cache-lookup-value key="primary-failure-count" variable-name="primaryFailureCount" />
+        <cache-lookup-value key="secondary-failure-count" variable-name="secondaryFailureCount" />
+        <cache-lookup-value key="tertiary-failure-count" variable-name="tertiaryFailureCount" />
+        
+        <!-- デフォルト値を設定 -->
+        <set-variable name="primaryCircuitState" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;primaryCircuitState&quot;, &quot;CLOSED&quot;))" />
+        <set-variable name="secondaryCircuitState" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;secondaryCircuitState&quot;, &quot;CLOSED&quot;))" />
+        <set-variable name="tertiaryCircuitState" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;tertiaryCircuitState&quot;, &quot;CLOSED&quot;))" />
+        
+        <set-variable name="primaryFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;primaryFailureCount&quot;, 0))" />
+        <set-variable name="secondaryFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;secondaryFailureCount&quot;, 0))" />
+        <set-variable name="tertiaryFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;tertiaryFailureCount&quot;, 0))" />
+        
+        <!-- バックエンド選択ロジック -->
+        <choose>
+            <!-- プライマリが利用可能な場合 -->
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;primaryCircuitState&quot;) == &quot;CLOSED&quot;)">
+                <set-backend-service backend-id="cv-primary" />
+                <set-variable name="selectedBackend" value="cv-primary" />
+                <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+                    <value>{{cv-primary-key}}</value>
+                </set-header>
+            </when>
+            <!-- セカンダリが利用可能な場合 -->
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;secondaryCircuitState&quot;) == &quot;CLOSED&quot;)">
+                <set-backend-service backend-id="cv-secondary" />
+                <set-variable name="selectedBackend" value="cv-secondary" />
+                <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+                    <value>{{cv-secondary-key}}</value>
+                </set-header>
+            </when>
+            <!-- ターシャリが利用可能な場合 -->
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;tertiaryCircuitState&quot;) == &quot;CLOSED&quot;)">
+                <set-backend-service backend-id="cv-tertiary" />
+                <set-variable name="selectedBackend" value="cv-tertiary" />
+                <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+                    <value>{{cv-tertiary-key}}</value>
+                </set-header>
+            </when>
+            <!-- 全てのバックエンドがOPENの場合はプライマリを再試行 -->
+            <otherwise>
+                <set-backend-service backend-id="cv-primary" />
+                <set-variable name="selectedBackend" value="cv-primary" />
+                <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+                    <value>{{cv-primary-key}}</value>
+                </set-header>
+            </otherwise>
+        </choose>
+    </inbound>
+    
+    <backend>
+        <!-- リトライロジック: 429とサーバーエラーに対応 -->
+        <retry condition="@(context.Response.StatusCode == 429 || context.Response.StatusCode >= 500)" 
+               count="3" 
+               interval="2" 
+               max-interval="10" 
+               delta="2" 
+               first-fast-retry="false">
+            <base />
+            
+            <!-- リトライ時に別のバックエンドを試行 -->
+            <choose>
+                <when condition="@(context.Response.StatusCode >= 500)">
+                    <set-variable name="shouldSwitchBackend" value="@(true)" />
+                </when>
+            </choose>
+        </retry>
+    </backend>
+    
+    <outbound>
+        <base />
+        
+        <!-- 成功した場合、失敗カウントをリセット -->
+        <choose>
+            <when condition="@(context.Response.StatusCode &gt;= 200 &amp;&amp; context.Response.StatusCode &lt; 300)">
+                <choose>
+                    <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-primary&quot;)">
+                        <cache-store-value key="primary-failure-count" value="0" duration="300" />
+                        <cache-store-value key="circuit-state-primary" value="CLOSED" duration="300" />
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-secondary&quot;)">
+                        <cache-store-value key="secondary-failure-count" value="0" duration="300" />
+                        <cache-store-value key="circuit-state-secondary" value="CLOSED" duration="300" />
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-tertiary&quot;)">
+                        <cache-store-value key="tertiary-failure-count" value="0" duration="300" />
+                        <cache-store-value key="circuit-state-tertiary" value="CLOSED" duration="300" />
+                    </when>
+                </choose>
+            </when>
+            
+            <!-- サーバーエラーの場合、失敗カウントを増加 -->
+            <when condition="@(context.Response.StatusCode &gt;= 500)">
+                <choose>
+                    <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-primary&quot;)">
+                        <set-variable name="newFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;primaryFailureCount&quot;) + 1)" />
+                        <cache-store-value key="primary-failure-count" value="@((int)context.Variables[&quot;newFailureCount&quot;])" duration="300" />
+                        
+                        <!-- 閾値を超えたらサーキットをOPEN -->
+                        <choose>
+                            <when condition="@((int)context.Variables[&quot;newFailureCount&quot;] &gt;= 5)">
+                                <cache-store-value key="circuit-state-primary" value="OPEN" duration="60" />
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-secondary&quot;)">
+                        <set-variable name="newFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;secondaryFailureCount&quot;) + 1)" />
+                        <cache-store-value key="secondary-failure-count" value="@((int)context.Variables[&quot;newFailureCount&quot;])" duration="300" />
+                        
+                        <choose>
+                            <when condition="@((int)context.Variables[&quot;newFailureCount&quot;] &gt;= 5)">
+                                <cache-store-value key="circuit-state-secondary" value="OPEN" duration="60" />
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-tertiary&quot;)">
+                        <set-variable name="newFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;tertiaryFailureCount&quot;) + 1)" />
+                        <cache-store-value key="tertiary-failure-count" value="@((int)context.Variables[&quot;newFailureCount&quot;])" duration="300" />
+                        
+                        <choose>
+                            <when condition="@((int)context.Variables[&quot;newFailureCount&quot;] &gt;= 5)">
+                                <cache-store-value key="circuit-state-tertiary" value="OPEN" duration="60" />
+                            </when>
+                        </choose>
+                    </when>
+                </choose>
+            </when>
+        </choose>
+        
+        <!-- デバッグ用ヘッダー追加 -->
+        <set-header name="X-Served-By-Backend" exists-action="override">
+            <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;, &quot;unknown&quot;))</value>
+        </set-header>
+        <set-header name="X-Circuit-State-Primary" exists-action="override">
+            <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;primaryCircuitState&quot;, &quot;CLOSED&quot;))</value>
+        </set-header>
+        <set-header name="X-Circuit-State-Secondary" exists-action="override">
+            <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;secondaryCircuitState&quot;, &quot;CLOSED&quot;))</value>
+        </set-header>
+        <set-header name="X-Circuit-State-Tertiary" exists-action="override">
+            <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;tertiaryCircuitState&quot;, &quot;CLOSED&quot;))</value>
+        </set-header>
+    </outbound>
+    
+    <on-error>
+        <base />
+        
+        <!-- エラー時もサーキットブレーカーの状態を更新 -->
+        <choose>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-primary&quot;)">
+                <set-variable name="newFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;primaryFailureCount&quot;) + 1)" />
+                <cache-store-value key="primary-failure-count" value="@((int)context.Variables[&quot;newFailureCount&quot;])" duration="300" />
+                
+                <choose>
+                    <when condition="@((int)context.Variables[&quot;newFailureCount&quot;] &gt;= 5)">
+                        <cache-store-value key="circuit-state-primary" value="OPEN" duration="60" />
+                    </when>
+                </choose>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-secondary&quot;)">
+                <set-variable name="newFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;secondaryFailureCount&quot;) + 1)" />
+                <cache-store-value key="secondary-failure-count" value="@((int)context.Variables[&quot;newFailureCount&quot;])" duration="300" />
+                
+                <choose>
+                    <when condition="@((int)context.Variables[&quot;newFailureCount&quot;] &gt;= 5)">
+                        <cache-store-value key="circuit-state-secondary" value="OPEN" duration="60" />
+                    </when>
+                </choose>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedBackend&quot;) == &quot;cv-tertiary&quot;)">
+                <set-variable name="newFailureCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;tertiaryFailureCount&quot;) + 1)" />
+                <cache-store-value key="tertiary-failure-count" value="@((int)context.Variables[&quot;newFailureCount&quot;])" duration="300" />
+                
+                <choose>
+                    <when condition="@((int)context.Variables[&quot;newFailureCount&quot;] &gt;= 5)">
+                        <cache-store-value key="circuit-state-tertiary" value="OPEN" duration="60" />
+                    </when>
+                </choose>
+            </when>
+        </choose>
+    </on-error>
+</policies>

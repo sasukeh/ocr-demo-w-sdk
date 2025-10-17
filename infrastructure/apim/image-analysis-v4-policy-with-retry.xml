@@ -1,0 +1,29 @@
+<policies>
+    <inbound>
+        <base />
+        <set-backend-service base-url="https://cv-ocr-demo-je-primary.cognitiveservices.azure.com" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+            <value>{{cv-primary-key}}</value>
+        </set-header>
+    </inbound>
+    <backend>
+        <!-- 429エラー（レート制限）と500番台エラーに対応するリトライポリシー -->
+        <retry condition="@(context.Response.StatusCode == 429 || context.Response.StatusCode >= 500)" 
+               count="3" 
+               interval="2" 
+               max-interval="10" 
+               delta="2" 
+               first-fast-retry="false">
+            <base />
+        </retry>
+    </backend>
+    <outbound>
+        <base />
+        <set-header name="X-Served-By-Backend" exists-action="override">
+            <value>cv-primary-direct</value>
+        </set-header>
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

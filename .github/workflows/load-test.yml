@@ -1,0 +1,208 @@
+name: OCR Load Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Test scenario to run'
+        required: true
+        type: choice
+        options:
+          - scenario-a
+          - scenario-b
+          - both
+        default: 'both'
+      total_requests:
+        description: 'Total number of requests'
+        required: true
+        type: number
+        default: 1000
+      workers:
+        description: 'Number of concurrent workers'
+        required: true
+        type: number
+        default: 5
+  schedule:
+    # 毎日 9:00 JST (00:00 UTC) に実行
+    - cron: '0 0 * * *'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scenario_a_client/**'
+      - 'scenario_b_apim/**'
+      - '.github/workflows/load-test.yml'
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  scenario-a-test:
+    name: Scenario A Load Test
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scenario == 'scenario-a' || github.event.inputs.scenario == 'both' || github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run Scenario A load test
+        env:
+          CV_PRIMARY_ENDPOINT: ${{ secrets.CV_PRIMARY_ENDPOINT }}
+          CV_PRIMARY_KEY: ${{ secrets.CV_PRIMARY_KEY }}
+          CV_SECONDARY_ENDPOINT: ${{ secrets.CV_SECONDARY_ENDPOINT }}
+          CV_SECONDARY_KEY: ${{ secrets.CV_SECONDARY_KEY }}
+          CV_TERTIARY_ENDPOINT: ${{ secrets.CV_TERTIARY_ENDPOINT }}
+          CV_TERTIARY_KEY: ${{ secrets.CV_TERTIARY_KEY }}
+        run: |
+          python scenario_a_client/load_test.py \
+            --duration 300 \
+            --concurrency ${{ github.event.inputs.workers || 10 }}
+      
+      - name: Upload Scenario A results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scenario-a-results
+          path: scenario_a_*.json
+          retention-days: 30
+
+  scenario-b-test:
+    name: Scenario B Load Test
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scenario == 'scenario-b' || github.event.inputs.scenario == 'both' || github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run Scenario B load test
+        env:
+          APIM_GATEWAY_URL: ${{ secrets.APIM_GATEWAY_URL }}
+          APIM_SUBSCRIPTION_KEY: ${{ secrets.APIM_SUBSCRIPTION_KEY }}
+          APIM_OCR_ENDPOINT: ${{ secrets.APIM_OCR_ENDPOINT }}
+        run: |
+          python scenario_b_apim/load_test_count.py \
+            --total-requests ${{ github.event.inputs.total_requests || 1000 }} \
+            --workers ${{ github.event.inputs.workers || 5 }}
+      
+      - name: Upload Scenario B results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scenario-b-results
+          path: scenario_b_load_test_*.json
+          retention-days: 30
+  
+  analyze-results:
+    name: Analyze Results
+    runs-on: ubuntu-latest
+    needs: [scenario-a-test, scenario-b-test]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install rich
+      
+      - name: Compare scenarios
+        run: |
+          if [ -f compare_scenarios.sh ]; then
+            chmod +x compare_scenarios.sh
+            ./compare_scenarios.sh scenario-a-results scenario-b-results || true
+          fi
+      
+      - name: Create summary report
+        run: |
+          python -c "
+          import json
+          import os
+          from pathlib import Path
+          from datetime import datetime
+          
+          print('## 📊 Load Test Results Summary')
+          print(f'Test Date: {datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")}')
+          print()
+          
+          # Scenario A
+          a_files = list(Path('scenario-a-results').glob('*.json')) if Path('scenario-a-results').exists() else []
+          if a_files:
+              with open(a_files[0]) as f:
+                  a_data = json.load(f)
+                  print('### Scenario A (Direct Client)')
+                  print(f'- Total Requests: {a_data.get(\"total_requests\", \"N/A\")}')
+                  print(f'- Success Rate: {a_data.get(\"success_rate\", \"N/A\")}%')
+                  print(f'- Avg Latency: {a_data.get(\"avg_latency_ms\", \"N/A\")}ms')
+                  print()
+          
+          # Scenario B
+          b_files = list(Path('scenario-b-results').glob('*.json')) if Path('scenario-b-results').exists() else []
+          if b_files:
+              with open(b_files[0]) as f:
+                  b_data = json.load(f)
+                  print('### Scenario B (APIM)')
+                  print(f'- Total Requests: {b_data.get(\"total_requests\", \"N/A\")}')
+                  print(f'- Success Rate: {b_data.get(\"success_rate\", \"N/A\")}%')
+                  print(f'- Avg Latency: {b_data.get(\"avg_latency_ms\", \"N/A\")}ms')
+                  print()
+          " >> $GITHUB_STEP_SUMMARY
+      
+      - name: Check success rate threshold
+        run: |
+          python -c "
+          import json
+          import sys
+          from pathlib import Path
+          
+          threshold = 90.0
+          failed = False
+          
+          # Scenario B チェック (より重要)
+          b_files = list(Path('scenario-b-results').glob('*.json')) if Path('scenario-b-results').exists() else []
+          if b_files:
+              with open(b_files[0]) as f:
+                  b_data = json.load(f)
+                  success_rate = b_data.get('success_rate', 0)
+                  if success_rate < threshold:
+                      print(f'❌ Scenario B success rate ({success_rate}%) is below threshold ({threshold}%)')
+                      failed = True
+                  else:
+                      print(f'✅ Scenario B success rate: {success_rate}%')
+          
+          if failed:
+              sys.exit(1)
+          "

@@ -1,0 +1,91 @@
+{
+  "products": [
+    {
+      "id": "ocr-demo-product",
+      "displayName": "OCR Demo Product",
+      "description": "Product for OCR latency demonstration with circuit breaker",
+      "subscriptionRequired": true,
+      "approvalRequired": false,
+      "subscriptionsLimit": 100,
+      "state": "published",
+      "apis": [
+        {
+          "id": "ocr-demo-api"
+        }
+      ],
+      "groups": [
+        {
+          "id": "developers"
+        }
+      ]
+    }
+  ],
+  "apis": [
+    {
+      "id": "ocr-demo-api",
+      "displayName": "OCR Demo API",
+      "description": "Azure Computer Vision OCR API with circuit breaker and failover",
+      "serviceUrl": "https://placeholder.cognitiveservices.azure.com",
+      "path": "ocr",
+      "protocols": ["https"],
+      "subscriptionRequired": true,
+      "operations": [
+        {
+          "id": "read-analyze",
+          "displayName": "OCR Read Analyze",
+          "method": "POST",
+          "urlTemplate": "/read/*",
+          "description": "Analyze image for text extraction",
+          "request": {
+            "headers": [
+              {
+                "name": "Content-Type",
+                "description": "Media type of the body sent to the API",
+                "type": "string",
+                "defaultValue": "application/octet-stream",
+                "required": true
+              }
+            ]
+          },
+          "responses": [
+            {
+              "statusCode": 200,
+              "description": "Successful operation",
+              "representations": [
+                {
+                  "contentType": "application/json"
+                }
+              ]
+            },
+            {
+              "statusCode": 202,
+              "description": "Accepted - Operation started",
+              "representations": [
+                {
+                  "contentType": "application/json"
+                }
+              ]
+            },
+            {
+              "statusCode": 429,
+              "description": "Rate limit exceeded"
+            },
+            {
+              "statusCode": 500,
+              "description": "Internal server error"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "subscriptions": [
+    {
+      "id": "ocr-demo-subscription",
+      "productId": "ocr-demo-product", 
+      "displayName": "OCR Demo Subscription",
+      "state": "active",
+      "allowTracing": true
+    }
+  ]
+}

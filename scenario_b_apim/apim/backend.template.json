@@ -1,0 +1,99 @@
+{
+  "backends": [
+    {
+      "id": "ocr-primary-backend",
+      "url": "https://cv-eastus.cognitiveservices.azure.com",
+      "protocol": "http",
+      "title": "OCR Primary (East US)",
+      "description": "Azure Computer Vision API - Primary endpoint in East US",
+      "properties": {
+        "skipCertificateChainValidation": false,
+        "skipCertificateNameValidation": false
+      },
+      "credentials": {
+        "header": {
+          "Ocp-Apim-Subscription-Key": "{{primary-ocr-key}}"
+        }
+      },
+      "proxy": {
+        "url": null,
+        "username": null,
+        "password": null
+      },
+      "tls": {
+        "validateCertificateChain": true,
+        "validateCertificateName": true
+      }
+    },
+    {
+      "id": "ocr-secondary-backend",
+      "url": "https://cv-japaneast.cognitiveservices.azure.com",
+      "protocol": "http",
+      "title": "OCR Secondary (Japan East)",
+      "description": "Azure Computer Vision API - Secondary endpoint in Japan East",
+      "properties": {
+        "skipCertificateChainValidation": false,
+        "skipCertificateNameValidation": false
+      },
+      "credentials": {
+        "header": {
+          "Ocp-Apim-Subscription-Key": "{{secondary-ocr-key}}"
+        }
+      },
+      "proxy": {
+        "url": null,
+        "username": null,
+        "password": null
+      },
+      "tls": {
+        "validateCertificateChain": true,
+        "validateCertificateName": true
+      }
+    },
+    {
+      "id": "ocr-tertiary-backend",
+      "url": "https://cv-westeurope.cognitiveservices.azure.com",
+      "protocol": "http",
+      "title": "OCR Tertiary (West Europe)",
+      "description": "Azure Computer Vision API - Tertiary endpoint in West Europe",
+      "properties": {
+        "skipCertificateChainValidation": false,
+        "skipCertificateNameValidation": false
+      },
+      "credentials": {
+        "header": {
+          "Ocp-Apim-Subscription-Key": "{{tertiary-ocr-key}}"
+        }
+      },
+      "proxy": {
+        "url": null,
+        "username": null,
+        "password": null
+      },
+      "tls": {
+        "validateCertificateChain": true,
+        "validateCertificateName": true
+      }
+    }
+  ],
+  "namedValues": [
+    {
+      "displayName": "primary-ocr-key",
+      "name": "primary-ocr-key",
+      "value": "YOUR_PRIMARY_OCR_KEY_HERE",
+      "secret": true
+    },
+    {
+      "displayName": "secondary-ocr-key", 
+      "name": "secondary-ocr-key",
+      "value": "YOUR_SECONDARY_OCR_KEY_HERE",
+      "secret": true
+    },
+    {
+      "displayName": "tertiary-ocr-key",
+      "name": "tertiary-ocr-key", 
+      "value": "YOUR_TERTIARY_OCR_KEY_HERE",
+      "secret": true
+    }
+  ]
+}

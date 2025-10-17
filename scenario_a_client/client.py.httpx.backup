@@ -1,0 +1,269 @@
+import asyncio
+import httpx
+import json
+import time
+import random
+from typing import Optional, Dict, Any, Tuple
+import os
+from endpoints import EndpointPool
+from fallback_policy import FallbackPolicy
+from image_utils import ImageProcessor
+from rich.console import Console
+
+console = Console()
+
+
+class OCRClient:
+    """
+    Azure Computer Vision OCR API クライアント。
+    複数エンドポイント間でのフォールバック機能を提供。
+    """
+    
+    def __init__(self, pool: EndpointPool, policy: FallbackPolicy, global_timeout_ms: int = 12000):
+        self.pool = pool
+        self.policy = policy
+        self.global_timeout = global_timeout_ms / 1000.0  # 秒に変換
+        self.max_retries = int(os.getenv('MAX_RETRIES_PER_REQUEST', '2'))
+        
+        # HTTP/2対応のクライアント設定
+        self.client_config = {
+            'http2': True,
+            'timeout': httpx.Timeout(self.global_timeout),
+            'limits': httpx.Limits(max_connections=20, max_keepalive_connections=10)
+        }
+        
+        console.print(f"[green]OCRクライアント初期化: タイムアウト={self.global_timeout}s, 最大リトライ={self.max_retries}[/green]")
+
+    async def _make_request(self, method: str, url: str, headers: Dict[str, str], 
+                          data: Optional[bytes] = None, json_data: Optional[Dict] = None) -> Tuple[int, Dict[str, Any], int, Dict[str, str], Optional[int]]:
+        """
+        HTTPリクエストを実行し、レスポンス、レイテンシー、ヘッダー、Retry-Afterを返す
+        
+        Returns:
+            Tuple[status_code, response_json, latency_ms, response_headers, retry_after_seconds]
+        """
+        start_time = time.time()
+        
+        async with httpx.AsyncClient(**self.client_config) as client:
+            try:
+                if data:
+                    response = await client.request(method, url, headers=headers, content=data)
+                elif json_data:
+                    response = await client.request(method, url, headers=headers, json=json_data)
+                else:
+                    response = await client.request(method, url, headers=headers)
+                
+                latency_ms = int((time.time() - start_time) * 1000)
+                response_headers = dict(response.headers)
+                
+                # Retry-After ヘッダーを解析（大文字小文字を区別しない）
+                retry_after_seconds = None
+                retry_after_header = None
+                for key, value in response_headers.items():
+                    if key.lower() == 'retry-after':
+                        retry_after_header = value
+                        break
+                
+                if retry_after_header:
+                    try:
+                        retry_after_seconds = int(retry_after_header)
+                    except ValueError:
+                        # 日付形式の場合は無視（簡略化）
+                        retry_after_seconds = None
+                
+                # レスポンスボディの処理
+                response_json = {}
+                if response.content:
+                    try:
+                        response_json = response.json()
+                    except json.JSONDecodeError:
+                        response_json = {'text': response.text}
+                
+                return response.status_code, response_json, latency_ms, response_headers, retry_after_seconds
+                    
+            except asyncio.TimeoutError:
+                latency_ms = int(self.global_timeout * 1000)
+                return 408, {'error': 'Request timeout'}, latency_ms, {}, None
+            except Exception as e:
+                latency_ms = int((time.time() - start_time) * 1000)
+                return 500, {'error': str(e)}, latency_ms, {}, None
+
+    async def _read_analyze_sync(self, endpoint, image_data: bytes) -> Tuple[Optional[Dict[str, Any]], int, int, Optional[int]]:
+        """
+        Computer Vision Image Analysis v4.0 (同期版) を呼び出し
+        """
+        # Image Analysis v4.0の同期エンドポイント
+        base_url = endpoint.url.replace('/vision/v3.2/read/analyze', '') if '/vision/v3.2/read/analyze' in endpoint.url else endpoint.url
+        url = f"{base_url}/computervision/imageanalysis:analyze?features=read&api-version=2023-10-01"
+        
+        headers = {
+            'Ocp-Apim-Subscription-Key': endpoint.key,
+            'Content-Type': 'application/octet-stream'
+        }
+        
+        status, response, latency_ms, response_headers, retry_after = await self._make_request('POST', url, headers, data=image_data)
+        return response if status == 200 else None, status, latency_ms, retry_after
+
+    async def _read_analyze_async(self, endpoint, image_data: bytes) -> Tuple[Optional[Dict[str, Any]], int, int, Optional[int]]:
+        """
+        Computer Vision Read API v3.2 (非同期版) を呼び出し
+        Operation-Locationを追跡して結果を取得
+        """
+        headers = {
+            'Ocp-Apim-Subscription-Key': endpoint.key,
+            'Content-Type': 'application/octet-stream'
+        }
+        
+        # 1. 非同期解析を開始
+        start_time = time.time()
+        status, response, initial_latency, response_headers, retry_after = await self._make_request('POST', endpoint.url, headers, data=image_data)
+        
+        # Operation-Locationをヘッダーから取得（大文字小文字を区別しない）
+        operation_url = None
+        for key, value in response_headers.items():
+            if key.lower() == 'operation-location':
+                operation_url = value
+                break
+        
+        if status != 202 or not operation_url:
+            console.print(f"[red]Operation-Location取得失敗: status={status}, headers={list(response_headers.keys())}[/red]")
+            return None, status, initial_latency, retry_after
+        console.print(f"[blue]Operation URL: {operation_url}[/blue]")
+        
+        # 2. 結果をポーリング
+        poll_headers = {'Ocp-Apim-Subscription-Key': endpoint.key}
+        max_polls = 30
+        poll_interval = 0.5
+        
+        for poll_count in range(max_polls):
+            await asyncio.sleep(poll_interval)
+            
+            poll_status, poll_response, _, poll_headers_resp, poll_retry_after = await self._make_request('GET', operation_url, poll_headers)
+            
+            if poll_status != 200:
+                console.print(f"[red]ポーリング失敗: status={poll_status}[/red]")
+                break
+                
+            operation_status = poll_response.get('status', 'unknown')
+            console.print(f"[dim]ポーリング {poll_count + 1}: {operation_status}[/dim]")
+            
+            if operation_status == 'succeeded':
+                total_latency = int((time.time() - start_time) * 1000)
+                return poll_response.get('analyzeResult'), 200, total_latency, None
+            elif operation_status in ['failed', 'notStarted']:
+                console.print(f"[red]処理失敗: {operation_status}[/red]")
+                break
+            elif operation_status != 'running':
+                console.print(f"[yellow]不明なステータス: {operation_status}[/yellow]")
+            
+            # まだ処理中の場合は継続（runningステータス）
+        
+        total_latency = int((time.time() - start_time) * 1000)
+        return None, 500, total_latency, None
+
+    async def ocr_with_fallback(self, image_data: bytes, use_sync: bool = True) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """
+        フォールバック機能付きOCR実行
+        
+        Args:
+            image_data: 画像データ
+            use_sync: 同期APIを使用するか（デフォルト: True）
+            
+        Returns:
+            Tuple[結果, メタデータ]
+        """
+        # 画像前処理（リサイズ・圧縮）
+        processed_image_data, processing_info = ImageProcessor.process_image(image_data)
+        
+        attempts = []
+        fallback_count = 0
+        
+        for attempt in range(self.max_retries + 1):
+            endpoint = self.pool.choose()
+            
+            try:
+                console.print(f"[blue]試行 {attempt + 1}: {endpoint.region}[/blue]")
+                
+                if use_sync:
+                    result, status, latency_ms, retry_after = await self._read_analyze_sync(endpoint, processed_image_data)
+                else:
+                    result, status, latency_ms, retry_after = await self._read_analyze_async(endpoint, processed_image_data)
+                
+                success = result is not None and status == 200
+                
+                attempt_info = {
+                    'endpoint': endpoint.region,
+                    'status': status,
+                    'latency_ms': latency_ms,
+                    'success': success,
+                    'attempt': attempt + 1,
+                    'retry_after': retry_after
+                }
+                attempts.append(attempt_info)
+                
+                # フォールバック判定
+                need_fallback = self.policy.handle_request_result(endpoint, latency_ms, status, success)
+                
+                if success and not need_fallback:
+                    # 成功！
+                    metadata = {
+                        'attempts': attempts,
+                        'fallback_count': fallback_count,
+                        'final_endpoint': endpoint.region,
+                        'total_attempts': len(attempts),
+                        'image_processing': processing_info
+                    }
+                    return result, metadata
+                
+                if need_fallback:
+                    fallback_count += 1
+                    
+                # 最後の試行でない場合は継続
+                if attempt < self.max_retries:
+                    # Retry-Afterがある場合はそれを尊重、なければ指数バックオフ + ジッター
+                    if retry_after and retry_after > 0:
+                        delay = min(retry_after, 10.0)  # 最大10秒に制限
+                        console.print(f"[yellow]Retry-Afterにより{delay:.2f}秒待機後にリトライ[/yellow]")
+                    else:
+                        delay = min(2 ** attempt + random.uniform(0, 1), 5.0)
+                        console.print(f"[yellow]指数バックオフで{delay:.2f}秒待機後にリトライ[/yellow]")
+                    
+                    await asyncio.sleep(delay)
+                
+            except Exception as e:
+                console.print(f"[red]予期しないエラー: {e}[/red]")
+                attempt_info = {
+                    'endpoint': endpoint.region,
+                    'status': 500,
+                    'latency_ms': 0,
+                    'success': False,
+                    'attempt': attempt + 1,
+                    'error': str(e)
+                }
+                attempts.append(attempt_info)
+                fallback_count += 1
+        
+        # 全ての試行が失敗
+        metadata = {
+            'attempts': attempts,
+            'fallback_count': fallback_count,
+            'final_endpoint': None,
+            'total_attempts': len(attempts),
+            'image_processing': processing_info
+        }
+        return None, metadata
+
+
+async def create_client() -> OCRClient:
+    """環境変数からOCRクライアントを作成"""
+    pool = EndpointPool.from_env()
+    
+    single_ms = int(os.getenv('FALLBACK_SINGLE_MS', '1800'))
+    ewma_p95_ms = int(os.getenv('EWMA_P95_MS', '2000'))
+    alpha = float(os.getenv('EWMA_ALPHA', '0.2'))
+    global_timeout = int(os.getenv('GLOBAL_TIMEOUT_MS', '12000'))
+    
+    policy = FallbackPolicy(pool, single_ms, ewma_p95_ms, alpha)
+    client = OCRClient(pool, policy, global_timeout)
+    
+    return client

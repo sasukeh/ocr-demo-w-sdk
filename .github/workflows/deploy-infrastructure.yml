@@ -1,0 +1,435 @@
+name: Deploy Azure Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Scenario to deploy'
+        required: true
+        type: choice
+        options:
+          - scenario-a
+          - scenario-b
+          - both
+        default: 'both'
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+        default: 'dev'
+      resource_group:
+        description: 'Resource group name (optional, uses default if empty)'
+        required: false
+        type: string
+      region:
+        description: 'Azure region'
+        required: true
+        type: choice
+        options:
+          - japaneast
+          - eastus
+          - westeurope
+        default: 'japaneast'
+
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  validate-inputs:
+    name: Validate Deployment Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      resource_group: ${{ steps.set-vars.outputs.resource_group }}
+      deployment_name: ${{ steps.set-vars.outputs.deployment_name }}
+    
+    steps:
+      - name: Set deployment variables
+        id: set-vars
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          
+          if [ -n "${{ github.event.inputs.resource_group }}" ]; then
+            RG="${{ github.event.inputs.resource_group }}"
+          else
+            RG="rg-ocr-demo-${{ github.event.inputs.region }}-${{ github.event.inputs.environment }}"
+          fi
+          
+          DEPLOYMENT_NAME="ocr-deploy-${{ github.event.inputs.scenario }}-${TIMESTAMP}"
+          
+          echo "resource_group=${RG}" >> $GITHUB_OUTPUT
+          echo "deployment_name=${DEPLOYMENT_NAME}" >> $GITHUB_OUTPUT
+          echo "### Deployment Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- Scenario: ${{ github.event.inputs.scenario }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Resource Group: ${RG}" >> $GITHUB_STEP_SUMMARY
+          echo "- Region: ${{ github.event.inputs.region }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Deployment Name: ${DEPLOYMENT_NAME}" >> $GITHUB_STEP_SUMMARY
+
+  deploy-scenario-a:
+    name: Deploy Scenario A (Client-side Fallback)
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+    if: github.event.inputs.scenario == 'scenario-a' || github.event.inputs.scenario == 'both'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Create Resource Group
+        run: |
+          az group create \
+            --name ${{ needs.validate-inputs.outputs.resource_group }} \
+            --location ${{ github.event.inputs.region }} \
+            --tags \
+              environment=${{ github.event.inputs.environment }} \
+              project=ocr-demo \
+              scenario=scenario-a \
+              managedBy=github-actions
+      
+      - name: Deploy Computer Vision Resources
+        id: deploy-cv
+        run: |
+          echo "Deploying Computer Vision resources for Scenario A..."
+          
+          # Bicep デプロイ実行
+          az deployment group create \
+            --name ${{ needs.validate-inputs.outputs.deployment_name }} \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --template-file infrastructure/modules/computer-vision.bicep \
+            --parameters \
+              name=cv-ocr-demo-${{ github.event.inputs.region }}-primary \
+              location=${{ github.event.inputs.region }} \
+              sku=S1 \
+              tags='{"environment":"${{ github.event.inputs.environment }}","project":"ocr-demo","scenario":"scenario-a"}' \
+            --output json > cv_primary_output.json
+          
+          # Secondary CV
+          az deployment group create \
+            --name ${{ needs.validate-inputs.outputs.deployment_name }}-secondary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --template-file infrastructure/modules/computer-vision.bicep \
+            --parameters \
+              name=cv-ocr-demo-${{ github.event.inputs.region }}-secondary \
+              location=${{ github.event.inputs.region }} \
+              sku=S1 \
+              tags='{"environment":"${{ github.event.inputs.environment }}","project":"ocr-demo","scenario":"scenario-a"}' \
+            --output json > cv_secondary_output.json
+          
+          # Tertiary CV
+          az deployment group create \
+            --name ${{ needs.validate-inputs.outputs.deployment_name }}-tertiary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --template-file infrastructure/modules/computer-vision.bicep \
+            --parameters \
+              name=cv-ocr-demo-${{ github.event.inputs.region }}-tertiary \
+              location=${{ github.event.inputs.region }} \
+              sku=S1 \
+              tags='{"environment":"${{ github.event.inputs.environment }}","project":"ocr-demo","scenario":"scenario-a"}' \
+            --output json > cv_tertiary_output.json
+          
+          echo "✅ Computer Vision resources deployed successfully"
+      
+      - name: Get Deployment Outputs
+        id: outputs
+        run: |
+          # Primary
+          PRIMARY_ENDPOINT=$(az cognitiveservices account show \
+            --name cv-ocr-demo-${{ github.event.inputs.region }}-primary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query properties.endpoint -o tsv)
+          
+          PRIMARY_KEY=$(az cognitiveservices account keys list \
+            --name cv-ocr-demo-${{ github.event.inputs.region }}-primary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query key1 -o tsv)
+          
+          # Secondary
+          SECONDARY_ENDPOINT=$(az cognitiveservices account show \
+            --name cv-ocr-demo-${{ github.event.inputs.region }}-secondary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query properties.endpoint -o tsv)
+          
+          SECONDARY_KEY=$(az cognitiveservices account keys list \
+            --name cv-ocr-demo-${{ github.event.inputs.region }}-secondary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query key1 -o tsv)
+          
+          # Tertiary
+          TERTIARY_ENDPOINT=$(az cognitiveservices account show \
+            --name cv-ocr-demo-${{ github.event.inputs.region }}-tertiary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query properties.endpoint -o tsv)
+          
+          TERTIARY_KEY=$(az cognitiveservices account keys list \
+            --name cv-ocr-demo-${{ github.event.inputs.region }}-tertiary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query key1 -o tsv)
+          
+          # Summary
+          echo "### Scenario A Deployment Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Primary CV:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Endpoint: \`${PRIMARY_ENDPOINT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Key: \`${PRIMARY_KEY:0:10}***\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Secondary CV:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Endpoint: \`${SECONDARY_ENDPOINT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Key: \`${SECONDARY_KEY:0:10}***\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tertiary CV:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Endpoint: \`${TERTIARY_ENDPOINT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Key: \`${TERTIARY_KEY:0:10}***\`" >> $GITHUB_STEP_SUMMARY
+          
+          # Export for verification job
+          echo "primary_endpoint=${PRIMARY_ENDPOINT}" >> $GITHUB_OUTPUT
+          echo "primary_key=${PRIMARY_KEY}" >> $GITHUB_OUTPUT
+      
+      - name: Upload Deployment Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-a-outputs
+          path: |
+            cv_primary_output.json
+            cv_secondary_output.json
+            cv_tertiary_output.json
+
+  deploy-scenario-b:
+    name: Deploy Scenario B (APIM Circuit Breaker)
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+    if: github.event.inputs.scenario == 'scenario-b' || github.event.inputs.scenario == 'both'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Create Resource Group
+        run: |
+          az group create \
+            --name ${{ needs.validate-inputs.outputs.resource_group }} \
+            --location ${{ github.event.inputs.region }} \
+            --tags \
+              environment=${{ github.event.inputs.environment }} \
+              project=ocr-demo \
+              scenario=scenario-b \
+              managedBy=github-actions
+      
+      - name: Deploy APIM and Computer Vision
+        id: deploy-apim
+        run: |
+          echo "Deploying APIM and Computer Vision resources for Scenario B..."
+          
+          # メインデプロイ実行
+          az deployment group create \
+            --name ${{ needs.validate-inputs.outputs.deployment_name }} \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --template-file infrastructure/apim/apim-computer-vision.bicep \
+            --parameters \
+              environment=${{ github.event.inputs.environment }} \
+              location=${{ github.event.inputs.region }} \
+            --output json > apim_output.json
+          
+          echo "✅ APIM and Computer Vision resources deployed successfully"
+      
+      - name: Configure APIM Policies
+        run: |
+          echo "Configuring APIM policies..."
+          
+          # APIM インスタンス名を取得
+          APIM_NAME=$(az apim show \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query "[?contains(name, 'ocr-demo-apim')].name" -o tsv | head -1)
+          
+          if [ -z "$APIM_NAME" ]; then
+            echo "❌ APIM instance not found"
+            exit 1
+          fi
+          
+          echo "Found APIM: ${APIM_NAME}"
+          
+          # API を作成 (OCR API)
+          az apim api create \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --service-name ${APIM_NAME} \
+            --api-id ocr-api \
+            --path ocr \
+            --display-name "OCR API" \
+            --protocols https \
+            --service-url "https://placeholder.cognitiveservices.azure.com" || true
+          
+          # Operation を作成
+          az apim api operation create \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --service-name ${APIM_NAME} \
+            --api-id ocr-api \
+            --url-template "/computervision/imageanalysis:analyze" \
+            --method POST \
+            --display-name "Image Analysis v4" \
+            --operation-id image-analysis-v4 || true
+          
+          echo "✅ APIM API and operations configured"
+          echo "⚠️  Note: Manual policy upload required for circuit breaker policy"
+      
+      - name: Get Deployment Outputs
+        id: outputs
+        run: |
+          # APIM 情報取得
+          APIM_NAME=$(az apim show \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query "[?contains(name, 'ocr-demo-apim')].name" -o tsv | head -1)
+          
+          APIM_GATEWAY=$(az apim show \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --name ${APIM_NAME} \
+            --query gatewayUrl -o tsv)
+          
+          # Subscription Key 取得 (Built-in all-access subscription)
+          APIM_KEY=$(az apim subscription list \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --service-name ${APIM_NAME} \
+            --query "[?displayName=='Built-in all-access subscription'].primaryKey" -o tsv | head -1)
+          
+          # Computer Vision 情報
+          CV_PRIMARY_ENDPOINT=$(az cognitiveservices account show \
+            --name cv-ocr-demo-${{ github.event.inputs.region }}-primary \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query properties.endpoint -o tsv)
+          
+          # Summary
+          echo "### Scenario B Deployment Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**APIM:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Gateway URL: \`${APIM_GATEWAY}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Subscription Key: \`${APIM_KEY:0:10}***\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Computer Vision (Primary):**" >> $GITHUB_STEP_SUMMARY
+          echo "- Endpoint: \`${CV_PRIMARY_ENDPOINT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Upload circuit breaker policy from \`infrastructure/apim/policies/advanced-circuit-breaker-policy.xml\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. Configure Named Values in APIM for CV endpoints and keys" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test the deployment with load test workflow" >> $GITHUB_STEP_SUMMARY
+          
+          # Export
+          echo "apim_gateway=${APIM_GATEWAY}" >> $GITHUB_OUTPUT
+          echo "apim_key=${APIM_KEY}" >> $GITHUB_OUTPUT
+      
+      - name: Upload Deployment Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-b-outputs
+          path: apim_output.json
+
+  verify-deployment:
+    name: Verify Deployment
+    runs-on: ubuntu-latest
+    needs: [validate-inputs, deploy-scenario-a, deploy-scenario-b]
+    if: always() && (needs.deploy-scenario-a.result == 'success' || needs.deploy-scenario-b.result == 'success')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Verify Resources
+        run: |
+          echo "### Deployment Verification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # リソース一覧
+          RESOURCES=$(az resource list \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query "[].{Name:name, Type:type, Location:location}" \
+            --output table)
+          
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${RESOURCES}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          # リソース数
+          RESOURCE_COUNT=$(az resource list \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query "length([])" -o tsv)
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Resources Deployed:** ${RESOURCE_COUNT}" >> $GITHUB_STEP_SUMMARY
+          
+          # タグ検証
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployed Resources:**" >> $GITHUB_STEP_SUMMARY
+          az resource list \
+            --resource-group ${{ needs.validate-inputs.outputs.resource_group }} \
+            --query "[].{Name:name, Type:type}" -o table
+      
+      - name: Generate .env Template
+        run: |
+          echo "Generating .env template for deployment..."
+          
+          cat > deployment.env.template << EOF
+          # Generated by GitHub Actions Deployment
+          # Date: $(date)
+          # Resource Group: ${{ needs.validate-inputs.outputs.resource_group }}
+          # Region: ${{ github.event.inputs.region }}
+          # Environment: ${{ github.event.inputs.environment }}
+          
+          # Scenario A Configuration
+          CV_PRIMARY_ENDPOINT=https://cv-ocr-demo-${{ github.event.inputs.region }}-primary.cognitiveservices.azure.com/
+          CV_PRIMARY_KEY=<get-from-azure-portal>
+          CV_SECONDARY_ENDPOINT=https://cv-ocr-demo-${{ github.event.inputs.region }}-secondary.cognitiveservices.azure.com/
+          CV_SECONDARY_KEY=<get-from-azure-portal>
+          CV_TERTIARY_ENDPOINT=https://cv-ocr-demo-${{ github.event.inputs.region }}-tertiary.cognitiveservices.azure.com/
+          CV_TERTIARY_KEY=<get-from-azure-portal>
+          
+          # Scenario B Configuration
+          APIM_GATEWAY_URL=https://ocr-demo-apim-${{ github.event.inputs.environment }}.azure-api.net
+          APIM_SUBSCRIPTION_KEY=<get-from-azure-portal>
+          APIM_OCR_ENDPOINT=/ocr/computervision/imageanalysis:analyze?api-version=2024-02-01&features=read
+          EOF
+          
+          cat deployment.env.template
+      
+      - name: Upload .env Template
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-env-template
+          path: deployment.env.template
+
+  notify-completion:
+    name: Notify Deployment Completion
+    runs-on: ubuntu-latest
+    needs: [validate-inputs, verify-deployment]
+    if: always()
+    
+    steps:
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Scenario:** ${{ github.event.inputs.scenario }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Resource Group:** ${{ needs.validate-inputs.outputs.resource_group }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ github.event.inputs.region }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the deployment artifacts for configuration details" >> $GITHUB_STEP_SUMMARY
+          echo "2. Configure your local \`.env\` file using the template" >> $GITHUB_STEP_SUMMARY
+          echo "3. Run load tests to verify the deployment" >> $GITHUB_STEP_SUMMARY
+          echo "4. (Scenario B only) Upload APIM circuit breaker policy manually" >> $GITHUB_STEP_SUMMARY

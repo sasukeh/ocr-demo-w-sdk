@@ -1,0 +1,190 @@
+<policies>
+  <inbound>
+    <base />
+    
+    <!-- エンドポイントURL定義 -->
+    <set-variable name="epPrimary" value="https://cv-eastus.cognitiveservices.azure.com" />
+    <set-variable name="epSecondary" value="https://cv-japaneast.cognitiveservices.azure.com" />
+    <set-variable name="epTertiary" value="https://cv-westeurope.cognitiveservices.azure.com" />
+    
+    <!-- 各エンドポイントのAPIキー -->
+    <set-variable name="keyPrimary" value="{{primary-ocr-key}}" />
+    <set-variable name="keySecondary" value="{{secondary-ocr-key}}" />
+    <set-variable name="keyTertiary" value="{{tertiary-ocr-key}}" />
+    
+    <!-- サーキットブレーカーの状態をキャッシュから取得 -->
+    <cache-lookup-value key="ocr-cb-primary-state" variable-name="cbPrimaryState" />
+    <cache-lookup-value key="ocr-cb-secondary-state" variable-name="cbSecondaryState" />
+    
+    <!-- 失敗カウンターを取得 -->
+    <cache-lookup-value key="ocr-primary-failures" variable-name="primaryFailures" />
+    <cache-lookup-value key="ocr-secondary-failures" variable-name="secondaryFailures" />
+    
+    <!-- デフォルト値設定 -->
+    <set-variable name="cbPrimaryState" value="@(context.Variables.GetValueOrDefault("cbPrimaryState", "CLOSED"))" />
+    <set-variable name="cbSecondaryState" value="@(context.Variables.GetValueOrDefault("cbSecondaryState", "CLOSED"))" />
+    <set-variable name="primaryFailures" value="@(int.Parse(context.Variables.GetValueOrDefault("primaryFailures", "0")))" />
+    <set-variable name="secondaryFailures" value="@(int.Parse(context.Variables.GetValueOrDefault("secondaryFailures", "0")))" />
+    
+    <!-- バックエンドサービス選択ロジック -->
+    <choose>
+      <!-- プライマリが利用可能な場合 -->
+      <when condition="@((string)context.Variables["cbPrimaryState"] == "CLOSED")">
+        <set-backend-service base-url="@((string)context.Variables["epPrimary"])" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+          <value>@((string)context.Variables["keyPrimary"])</value>
+        </set-header>
+        <set-variable name="selectedEndpoint" value="primary" />
+      </when>
+      <!-- セカンダリが利用可能な場合 -->
+      <when condition="@((string)context.Variables["cbSecondaryState"] == "CLOSED")">
+        <set-backend-service base-url="@((string)context.Variables["epSecondary"])" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+          <value>@((string)context.Variables["keySecondary"])</value>
+        </set-header>
+        <set-variable name="selectedEndpoint" value="secondary" />
+      </when>
+      <!-- 最後の手段としてターシャリ -->
+      <otherwise>
+        <set-backend-service base-url="@((string)context.Variables["epTertiary"])" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+          <value>@((string)context.Variables["keyTertiary"])</value>
+        </set-header>
+        <set-variable name="selectedEndpoint" value="tertiary" />
+      </otherwise>
+    </choose>
+    
+    <!-- リクエスト開始時刻を記録 -->
+    <set-variable name="startTicks" value="@(DateTime.UtcNow.Ticks)" />
+    
+    <!-- 指数バックオフリトライ設定 -->
+    <retry condition="@(context.Response == null || 
+                        (context.Response.StatusCode == 429) || 
+                        ((int)context.Response.StatusCode >= 500) ||
+                        (((DateTime.UtcNow.Ticks - (long)context.Variables["startTicks"]) / 10000) >= 1800))"
+           count="2" 
+           interval="1" 
+           delta="1" 
+           max-interval="3" 
+           first-fast-retry="true">
+      
+      <!-- リトライ時は別エンドポイントに切り替え -->
+      <choose>
+        <when condition="@((string)context.Variables["selectedEndpoint"] == "primary")">
+          <set-backend-service base-url="@((string)context.Variables["epSecondary"])" />
+          <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+            <value>@((string)context.Variables["keySecondary"])</value>
+          </set-header>
+          <set-variable name="selectedEndpoint" value="secondary" />
+        </when>
+        <when condition="@((string)context.Variables["selectedEndpoint"] == "secondary")">
+          <set-backend-service base-url="@((string)context.Variables["epTertiary"])" />
+          <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+            <value>@((string)context.Variables["keyTertiary"])</value>
+          </set-header>
+          <set-variable name="selectedEndpoint" value="tertiary" />
+        </when>
+      </choose>
+    </retry>
+    
+  </inbound>
+  
+  <backend>
+    <base />
+  </backend>
+  
+  <outbound>
+    <base />
+    
+    <!-- レスポンス時刻を記録 -->
+    <set-variable name="endTicks" value="@(DateTime.UtcNow.Ticks)" />
+    <set-variable name="elapsedMs" value="@((DateTime.UtcNow.Ticks - (long)context.Variables["startTicks"]) / 10000)" />
+    
+    <!-- レスポンスヘッダーに統計情報を追加 -->
+    <set-header name="X-OCR-Endpoint" exists-action="override">
+      <value>@((string)context.Variables["selectedEndpoint"])</value>
+    </set-header>
+    <set-header name="X-OCR-Latency-Ms" exists-action="override">
+      <value>@((string)context.Variables["elapsedMs"])</value>
+    </set-header>
+    
+    <!-- 成功時の処理 -->
+    <choose>
+      <when condition="@(context.Response.StatusCode == 200 || context.Response.StatusCode == 202)">
+        <!-- 成功時は失敗カウンターをリセット -->
+        <choose>
+          <when condition="@((string)context.Variables["selectedEndpoint"] == "primary")">
+            <cache-store-value key="ocr-primary-failures" value="0" duration="300" />
+            <cache-store-value key="ocr-cb-primary-state" value="CLOSED" duration="300" />
+          </when>
+          <when condition="@((string)context.Variables["selectedEndpoint"] == "secondary")">
+            <cache-store-value key="ocr-secondary-failures" value="0" duration="300" />
+            <cache-store-value key="ocr-cb-secondary-state" value="CLOSED" duration="300" />
+          </when>
+        </choose>
+      </when>
+      
+      <!-- 失敗時の処理 -->
+      <otherwise>
+        <choose>
+          <when condition="@((context.Response.StatusCode == 429) || 
+                             ((int)context.Response.StatusCode >= 500) || 
+                             ((long)context.Variables["elapsedMs"] >= 1800))">
+            
+            <!-- 失敗カウンター更新 -->
+            <choose>
+              <when condition="@((string)context.Variables["selectedEndpoint"] == "primary")">
+                <set-variable name="newFailures" value="@((int)context.Variables["primaryFailures"] + 1)" />
+                <cache-store-value key="ocr-primary-failures" value="@((string)context.Variables["newFailures"])" duration="300" />
+                
+                <!-- 連続5回失敗または直近20回の失敗率50%超でサーキット開放 -->
+                <choose>
+                  <when condition="@((int)context.Variables["newFailures"] >= 5)">
+                    <cache-store-value key="ocr-cb-primary-state" value="OPEN" duration="60" />
+                    <set-header name="X-OCR-Circuit" exists-action="override">
+                      <value>primary-opened</value>
+                    </set-header>
+                  </when>
+                </choose>
+              </when>
+              
+              <when condition="@((string)context.Variables["selectedEndpoint"] == "secondary")">
+                <set-variable name="newFailures" value="@((int)context.Variables["secondaryFailures"] + 1)" />
+                <cache-store-value key="ocr-secondary-failures" value="@((string)context.Variables["newFailures"])" duration="300" />
+                
+                <choose>
+                  <when condition="@((int)context.Variables["newFailures"] >= 5)">
+                    <cache-store-value key="ocr-cb-secondary-state" value="OPEN" duration="60" />
+                    <set-header name="X-OCR-Circuit" exists-action="override">
+                      <value>secondary-opened</value>
+                    </set-header>
+                  </when>
+                </choose>
+              </when>
+            </choose>
+          </when>
+        </choose>
+      </otherwise>
+    </choose>
+    
+  </outbound>
+  
+  <on-error>
+    <base />
+    
+    <!-- エラー発生時はサーキットを開放 -->
+    <choose>
+      <when condition="@((string)context.Variables["selectedEndpoint"] == "primary")">
+        <cache-store-value key="ocr-cb-primary-state" value="OPEN" duration="60" />
+      </when>
+      <when condition="@((string)context.Variables["selectedEndpoint"] == "secondary")">
+        <cache-store-value key="ocr-cb-secondary-state" value="OPEN" duration="60" />
+      </when>
+    </choose>
+    
+    <set-header name="X-OCR-Error" exists-action="override">
+      <value>@(context.LastError.Message)</value>
+    </set-header>
+    
+  </on-error>
+</policies>

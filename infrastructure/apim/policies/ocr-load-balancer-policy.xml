@@ -1,0 +1,94 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- Set up variables for load balancing -->
+        <set-variable name="backendIndex" value="0" />
+        <set-variable name="maxRetries" value="3" />
+        <set-variable name="currentRetry" value="0" />
+        
+        <!-- Start load balancing with failover logic -->
+        <retry condition="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0) &lt; context.Variables.GetValueOrDefault&lt;int&gt;(&quot;maxRetries&quot;, 3) &amp;&amp; (context.Response == null || context.Response.StatusCode == 429 || context.Response.StatusCode &gt;= 500))" count="3" interval="1" delta="2">
+            
+            <!-- Select backend based on current retry attempt -->
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0) == 0)">
+                    <set-backend-service backend-id="cv-primary" />
+                    <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+                        <value>{{cv-primary-key}}</value>
+                    </set-header>
+                    <set-variable name="currentBackend" value="cv-primary" />
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0) == 1)">
+                    <set-backend-service backend-id="cv-secondary" />
+                    <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+                        <value>{{cv-secondary-key}}</value>
+                    </set-header>
+                    <set-variable name="currentBackend" value="cv-secondary" />
+                </when>
+                <otherwise>
+                    <set-backend-service backend-id="cv-tertiary" />
+                    <set-header name="Ocp-Apim-Subscription-Key" exists-action="override">
+                        <value>{{cv-tertiary-key}}</value>
+                    </set-header>
+                    <set-variable name="currentBackend" value="cv-tertiary" />
+                </otherwise>
+            </choose>
+
+            <!-- Add headers for monitoring -->
+            <set-header name="X-APIM-Attempt" exists-action="override">
+                <value>@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0) + 1)</value>
+            </set-header>
+            <set-header name="X-APIM-Backend" exists-action="override">
+                <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;currentBackend&quot;, &quot;unknown&quot;))</value>
+            </set-header>
+
+            <!-- Forward the request -->
+            <forward-request timeout="30" />
+
+            <!-- Check response and increment retry counter if needed -->
+            <choose>
+                <when condition="@(context.Response.StatusCode == 429 || context.Response.StatusCode &gt;= 500)">
+                    <set-variable name="currentRetry" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0) + 1)" />
+                    <trace source="LoadBalancer">
+                        <message>@($"Request failed with status {context.Response.StatusCode} on backend {context.Variables.GetValueOrDefault&lt;string&gt;(&quot;currentBackend&quot;, &quot;unknown&quot;)}, retry {context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0)}")</message>
+                    </trace>
+                </when>
+                <otherwise>
+                    <!-- Success - break out of retry loop -->
+                    <set-variable name="currentRetry" value="999" />
+                </otherwise>
+            </choose>
+        </retry>
+
+        <!-- Add response headers for monitoring -->
+        <set-header name="X-APIM-Final-Backend" exists-action="override">
+            <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;currentBackend&quot;, &quot;unknown&quot;))</value>
+        </set-header>
+        <set-header name="X-APIM-Total-Attempts" exists-action="override">
+            <value>@(Math.Min(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0), context.Variables.GetValueOrDefault&lt;int&gt;(&quot;maxRetries&quot;, 3)))</value>
+        </set-header>
+    </inbound>
+    
+    <backend>
+        <base />
+    </backend>
+    
+    <outbound>
+        <base />
+        <!-- Add custom headers to track which backend served the request -->
+        <set-header name="X-Served-By-Backend" exists-action="override">
+            <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;currentBackend&quot;, &quot;unknown&quot;))</value>
+        </set-header>
+        <set-header name="X-Request-Attempts" exists-action="override">
+            <value>@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;currentRetry&quot;, 0))</value>
+        </set-header>
+    </outbound>
+    
+    <on-error>
+        <base />
+        <!-- Log errors for debugging -->
+        <trace source="LoadBalancerError">
+            <message>@($"Error occurred: {context.LastError.Message} on backend {context.Variables.GetValueOrDefault&lt;string&gt;(&quot;currentBackend&quot;, &quot;unknown&quot;)}")</message>
+        </trace>
+    </on-error>
+</policies>
