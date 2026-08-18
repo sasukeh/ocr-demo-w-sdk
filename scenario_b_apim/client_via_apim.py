@@ -19,9 +19,9 @@ class APIMClient:
     def __init__(self, apim_gateway: str, subscription_key: str, global_timeout_ms: int = 12000):
         self.apim_gateway = apim_gateway.rstrip('/')
         self.subscription_key = subscription_key
-        self.global_timeout = global_timeout_ms / 1000.0  # 秒に変換
+        self.global_timeout = global_timeout_ms / 1000.0  # convert to seconds
         
-        # HTTP/2対応のクライアント設定
+        # HTTP/2 compatible client configuration
         self.client_config = {
             'http2': True,
             'timeout': httpx.Timeout(self.global_timeout),
@@ -46,19 +46,19 @@ class APIMClient:
                 
                 latency_ms = int((time.time() - start_time) * 1000)
                 
-                # レスポンスヘッダーを辞書として取得
+                # Get response headers as dictionary
                 response_headers = dict(response.headers)
                 
-                # Retry-After ヘッダーを解析
+                # Parse Retry-After header
                 retry_after_seconds = None
                 if 'Retry-After' in response_headers:
                     try:
                         retry_after_seconds = int(response_headers['Retry-After'])
                     except ValueError:
-                        # 日付形式の場合は無視（簡略化）
+                        # Ignore date format (simplified)
                         retry_after_seconds = None
                 
-                # レスポンスボディの処理
+                # Process response body
                 response_json = {}
                 if response.content:
                     try:
@@ -85,7 +85,7 @@ class APIMClient:
         Returns:
             Tuple[結果, メタデータ]
         """
-        # APIMのOCRエンドポイントURL構築 (v4.0 imageanalysis:analyze)
+        # Build APIM OCR endpoint URL (v4.0 imageanalysis:analyze)
         url = f"{self.apim_gateway}/vision/computervision/imageanalysis:analyze?api-version=2024-02-01&features=read"
         
         headers = {
@@ -102,13 +102,13 @@ class APIMClient:
             
             success = response is not None and status == 200
             
-            # APIMから返されるメタデータを抽出
+            # Extract metadata returned from APIM
             selected_endpoint = response_headers.get('X-OCR-Endpoint', 'unknown')
             apim_latency = response_headers.get('X-OCR-Latency-Ms')
             circuit_state = response_headers.get('X-OCR-Circuit')
             error_info = response_headers.get('X-OCR-Error')
             
-            # メタデータ構築
+            # Build metadata
             metadata = {
                 'apim_gateway': self.apim_gateway,
                 'selected_endpoint': selected_endpoint,

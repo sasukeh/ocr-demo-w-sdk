@@ -81,7 +81,7 @@ class EndpointPool:
         
         endpoints = []
         for i, (url, key) in enumerate(zip(endpoint_urls, endpoint_keys)):
-            # URLからリージョンを推測
+            # Infer region from URL
             region = 'unknown'
             if 'eastus' in url:
                 region = 'eastus'
@@ -118,12 +118,12 @@ class EndpointPool:
         healthy_endpoints = [ep for ep in self.endpoints if ep.healthy()]
         
         if healthy_endpoints:
-            # ヘルシーなエンドポイントからランダム選択（負荷分散）
+            # Randomly select from healthy endpoints (load balancing)
             endpoint = random.choice(healthy_endpoints)
             console.print(f"[blue]選択: {endpoint.region} (ヘルシー)[/blue]")
             return endpoint
         else:
-            # 全てペナルティ中の場合はラウンドロビン
+            # Use round-robin if all endpoints are penalized
             self._selection_index = (self._selection_index + 1) % len(self.endpoints)
             endpoint = self.endpoints[self._selection_index]
             console.print(f"[yellow]選択: {endpoint.region} (ペナルティ中だが強制)[/yellow]")

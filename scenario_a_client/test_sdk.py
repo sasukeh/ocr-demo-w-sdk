@@ -7,13 +7,13 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# .envファイルを読み込み
+# Load .env file
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
     print(f"環境変数を読み込みました: {env_path}")
 
-# モジュールパスを追加
+# Add module path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from client import create_client
@@ -29,12 +29,12 @@ async def test_scenario_a():
     console.print("="*60 + "\n", style="bold cyan")
     
     try:
-        # クライアント作成
+        # Create client
         console.print("[blue]1. OCRクライアントを作成中...[/blue]")
         client = await create_client()
         console.print("[green]✓ クライアント作成成功[/green]")
         
-        # テスト画像を探す
+        # Search for test images
         test_images_dir = Path(__file__).parent.parent / "test_images"
         
         if not test_images_dir.exists():
@@ -47,21 +47,21 @@ async def test_scenario_a():
             console.print("[red]✗ テスト画像が見つかりません[/red]")
             return
         
-        # 最初の画像でテスト
+        # Test with the first image
         test_image = test_images[0]
         console.print(f"\n[blue]2. テスト画像: {test_image.name}[/blue]")
         
-        # 画像読み込み
+        # Load image
         with open(test_image, 'rb') as f:
             image_data = f.read()
         
         console.print(f"[dim]   サイズ: {len(image_data):,} bytes ({len(image_data)/(1024*1024):.2f} MB)[/dim]")
         
-        # OCR実行
+        # Execute OCR
         console.print("\n[blue]3. OCR処理を実行中...[/blue]")
         result, metadata = await client.ocr_with_fallback(image_data)
         
-        # 結果表示
+        # Display results
         console.print("\n" + "="*60, style="bold green")
         console.print("📊 テスト結果", style="bold green")
         console.print("="*60, style="bold green")
@@ -69,13 +69,13 @@ async def test_scenario_a():
         if result:
             console.print("\n[green]✓ OCR処理成功![/green]")
             
-            # メタデータ表示
+            # Display metadata
             console.print(f"\n[cyan]クライアントタイプ:[/cyan] {metadata.get('client_type', 'Unknown')}")
             console.print(f"[cyan]最終エンドポイント:[/cyan] {metadata.get('final_endpoint', 'Unknown')}")
             console.print(f"[cyan]試行回数:[/cyan] {metadata.get('total_attempts', 0)}")
             console.print(f"[cyan]フォールバック回数:[/cyan] {metadata.get('fallback_count', 0)}")
             
-            # 試行詳細
+            # Attempt details
             console.print("\n[yellow]試行詳細:[/yellow]")
             for attempt in metadata.get('attempts', []):
                 status_color = "green" if attempt['success'] else "red"
@@ -86,7 +86,7 @@ async def test_scenario_a():
                     f"method={attempt.get('method', 'Unknown')}"
                 )
             
-            # OCR結果サンプル表示
+            # Display OCR result sample
             if 'readResult' in result and 'blocks' in result['readResult']:
                 blocks = result['readResult']['blocks']
                 if blocks and len(blocks) > 0 and 'lines' in blocks[0]:
@@ -98,7 +98,7 @@ async def test_scenario_a():
                     total_lines = sum(len(block.get('lines', [])) for block in blocks)
                     console.print(f"\n[dim]総行数: {total_lines}[/dim]")
             
-            # 画像処理情報
+            # Image processing information
             if 'image_processing' in metadata:
                 proc_info = metadata['image_processing']
                 console.print(f"\n[yellow]画像処理:[/yellow]")
@@ -113,7 +113,7 @@ async def test_scenario_a():
             console.print(f"  試行回数: {metadata.get('total_attempts', 0)}")
             console.print(f"  フォールバック回数: {metadata.get('fallback_count', 0)}")
             
-            # エラー詳細
+            # Error details
             for attempt in metadata.get('attempts', []):
                 if not attempt['success']:
                     console.print(f"\n[red]エラー詳細:[/red]")

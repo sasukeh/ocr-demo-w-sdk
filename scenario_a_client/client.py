@@ -1,5 +1,5 @@
 """
-Scenario A: Azure Computer Vision SDK を使ったクライアント側フォールバック実装
+Scenario A: Client-side fallback implementation using Azure Computer Vision SDK
 """
 import asyncio
 import time
@@ -31,7 +31,7 @@ class OCRClient:
     def __init__(self, pool: EndpointPool, policy: FallbackPolicy, global_timeout_ms: int = 12000):
         self.pool = pool
         self.policy = policy
-        self.global_timeout = global_timeout_ms / 1000.0  # 秒に変換
+        self.global_timeout = global_timeout_ms / 1000.0  # convert to seconds
         self.max_retries = int(os.getenv('MAX_RETRIES_PER_REQUEST', '2'))
         
         console.print(f"[green]OCRクライアント初期化 (Azure SDK): タイムアウト={self.global_timeout}s, 最大リトライ={self.max_retries}[/green]")
@@ -46,7 +46,7 @@ class OCRClient:
         Returns:
             ImageAnalysisClient インスタンス
         """
-        # URLからベースエンドポイントを抽出（/vision/... を除く）
+        # Extract base endpoint from URL (excluding /vision/...)
         endpoint_url = endpoint.url
         if '/vision/' in endpoint_url:
             endpoint_url = endpoint_url.split('/vision/')[0]
@@ -70,11 +70,11 @@ class OCRClient:
         start_time = time.time()
         
         try:
-            # SDKクライアントを作成
+            # Create SDK client
             client = self._create_client(endpoint)
             
-            # 画像解析を実行（同期的に）
-            # SDKは内部で適切なタイムアウト処理を行う
+            # Execute image analysis (synchronously)
+            # SDK handles timeout internally
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: client.analyze(
@@ -86,7 +86,7 @@ class OCRClient:
             
             latency_ms = int((time.time() - start_time) * 1000)
             
-            # 結果を辞書形式に変換
+            # Convert result to dictionary format
             response_dict = {
                 'readResult': {
                     'blocks': []
@@ -124,7 +124,7 @@ class OCRClient:
             latency_ms = int((time.time() - start_time) * 1000)
             status_code = e.status_code if hasattr(e, 'status_code') else 500
             
-            # Retry-Afterヘッダーを取得
+            # Get Retry-After header
             retry_after = None
             if hasattr(e, 'response') and e.response and hasattr(e.response, 'headers'):
                 retry_after_header = e.response.headers.get('Retry-After') or e.response.headers.get('retry-after')
@@ -162,7 +162,7 @@ class OCRClient:
         Returns:
             Tuple[結果, メタデータ]
         """
-        # 画像前処理（リサイズ・圧縮）
+        # Image preprocessing (resize and compression)
         processed_image_data, processing_info = ImageProcessor.process_image(image_data)
         
         attempts = []
@@ -174,7 +174,7 @@ class OCRClient:
             try:
                 console.print(f"[blue]試行 {attempt + 1}: {endpoint.region} (Azure SDK使用)[/blue]")
                 
-                # SDKを使って画像解析を実行
+                # Execute image analysis using SDK
                 result, status, latency_ms, retry_after = await self._analyze_image_with_sdk(
                     endpoint, 
                     processed_image_data
@@ -193,11 +193,11 @@ class OCRClient:
                 }
                 attempts.append(attempt_info)
                 
-                # フォールバック判定
+                # Determine if fallback is needed
                 need_fallback = self.policy.handle_request_result(endpoint, latency_ms, status, success)
                 
                 if success and not need_fallback:
-                    # 成功！
+                    # Success!
                     metadata = {
                         'attempts': attempts,
                         'fallback_count': fallback_count,
@@ -211,11 +211,11 @@ class OCRClient:
                 if need_fallback:
                     fallback_count += 1
                     
-                # 最後の試行でない場合は継続
+                # Continue if not the last attempt
                 if attempt < self.max_retries:
-                    # Retry-Afterがある場合はそれを尊重、なければ指数バックオフ + ジッター
+                    # Respect Retry-After if present, otherwise use exponential backoff + jitter
                     if retry_after and retry_after > 0:
-                        delay = min(retry_after, 10.0)  # 最大10秒に制限
+                        delay = min(retry_after, 10.0)  # cap at 10 seconds max
                         console.print(f"[yellow]Retry-Afterにより{delay:.2f}秒待機後にリトライ[/yellow]")
                     else:
                         delay = min(2 ** attempt + random.uniform(0, 1), 5.0)
@@ -237,7 +237,7 @@ class OCRClient:
                 attempts.append(attempt_info)
                 fallback_count += 1
         
-        # 全ての試行が失敗
+        # All attempts failed
         metadata = {
             'attempts': attempts,
             'fallback_count': fallback_count,

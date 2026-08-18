@@ -7,13 +7,13 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# .envファイルを読み込み
+# Load .env file
 env_path = Path(__file__).parent.parent / ".env.apim"
 if env_path.exists():
     load_dotenv(env_path)
     print(f"環境変数を読み込みました: {env_path}")
 
-# モジュールパスを追加
+# Add module path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from client_via_apim import APIMClient
@@ -29,7 +29,7 @@ async def test_scenario_b():
     console.print("="*60 + "\n", style="bold cyan")
     
     try:
-        # 環境変数確認
+        # Check environment variables
         apim_gateway = os.getenv('APIM_GATEWAY_URL')
         apim_key = os.getenv('APIM_SUBSCRIPTION_KEY')
         
@@ -38,14 +38,14 @@ async def test_scenario_b():
             console.print("[yellow]ヒント: .env.apim ファイルを確認してください[/yellow]")
             return
         
-        # クライアント作成
+        # Create client
         console.print("[blue]1. APIMクライアントを作成中...[/blue]")
         console.print(f"[dim]   Gateway: {apim_gateway}[/dim]")
         
         client = APIMClient(apim_gateway, apim_key)
         console.print("[green]✓ クライアント作成成功[/green]")
         
-        # テスト画像を探す
+        # Search for test images
         test_images_dir = Path(__file__).parent.parent / "test_images"
         
         if not test_images_dir.exists():
@@ -58,21 +58,21 @@ async def test_scenario_b():
             console.print("[red]✗ テスト画像が見つかりません[/red]")
             return
         
-        # 最初の画像でテスト
+        # Test with the first image
         test_image = test_images[0]
         console.print(f"\n[blue]2. テスト画像: {test_image.name}[/blue]")
         
-        # 画像読み込み
+        # Load image
         with open(test_image, 'rb') as f:
             image_data = f.read()
         
         console.print(f"[dim]   サイズ: {len(image_data):,} bytes ({len(image_data)/(1024*1024):.2f} MB)[/dim]")
         
-        # OCR実行
+        # Execute OCR
         console.print("\n[blue]3. OCR処理を実行中 (APIM経由)...[/blue]")
         result, metadata = await client.ocr_via_apim(image_data)
         
-        # 結果表示
+        # Display results
         console.print("\n" + "="*60, style="bold green")
         console.print("📊 テスト結果", style="bold green")
         console.print("="*60, style="bold green")
@@ -80,16 +80,16 @@ async def test_scenario_b():
         if result:
             console.print("\n[green]✓ OCR処理成功![/green]")
             
-            # メタデータ表示
+            # Display metadata
             console.print(f"\n[cyan]クライアントタイプ:[/cyan] httpx + APIM")
             console.print(f"[cyan]レイテンシー:[/cyan] {metadata.get('latency_ms', 0)}ms")
             console.print(f"[cyan]ステータスコード:[/cyan] {metadata.get('status_code', 'Unknown')}")
             
-            # APIMヘッダー情報
+            # APIM header information
             if 'backend' in metadata:
                 console.print(f"[cyan]バックエンド:[/cyan] {metadata['backend']}")
             
-            # OCR結果サンプル表示
+            # Display OCR result sample
             if 'readResult' in result and 'blocks' in result['readResult']:
                 blocks = result['readResult']['blocks']
                 if blocks and len(blocks) > 0 and 'lines' in blocks[0]:

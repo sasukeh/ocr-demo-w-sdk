@@ -126,7 +126,7 @@ class APIMLoadTester:
         # レスポンス時間統計
         response_times = [r.total_duration for r in successful_requests]
         
-        # バックエンド使用状況
+        # Backend usage
         backend_usage = {}
         for result in successful_requests:
             backend = result.served_by_backend or "unknown"
@@ -284,7 +284,7 @@ async def run_apim_load_test():
                   f"総リクエスト={test_config.total_requests}, "
                   f"間隔={test_config.request_interval}s")
     
-    # 負荷テスト実行
+    # Execute load test
     tester = APIMLoadTester(config, console)
     
     console.print("\n🚀 APIM 負荷テスト開始...", style="bold green")
@@ -292,7 +292,7 @@ async def run_apim_load_test():
     try:
         analysis = await tester.run_load_test(test_config, test_images)
         
-        # 結果表示
+        # Display results
         tester.display_results(analysis)
         
         # 結果保存

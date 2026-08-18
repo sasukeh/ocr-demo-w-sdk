@@ -68,7 +68,7 @@ class APIMMetricsManager:
         ocr_times = [m.get('ocr_duration', 0) for m in successful_requests]
         result_times = [m.get('result_duration', 0) for m in successful_requests]
         
-        # バックエンド使用状況
+        # Backend usage
         backend_usage = {}
         attempt_counts = []
         

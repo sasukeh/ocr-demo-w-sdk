@@ -264,7 +264,7 @@ class APIMOCRClient:
         successful_requests = [m for m in self.metrics if m.success]
         failed_requests = [m for m in self.metrics if not m.success]
         
-        # バックエンド使用状況
+        # Backend usage
         backend_usage = defaultdict(int)
         for metrics in successful_requests:
             if metrics.served_by_backend:
@@ -316,7 +316,7 @@ class APIMDisplay:
         table.add_row("最大レスポンス時間", f"{stats['max_response_time']:.2f}s")
         table.add_row("平均試行回数", f"{stats['avg_attempts_per_request']:.1f}")
         
-        # バックエンド使用状況
+        # Backend usage
         backend_info = Text()
         for backend, count in stats['backend_usage'].items():
             percentage = (count / stats['successful_requests']) * 100 if stats['successful_requests'] > 0 else 0

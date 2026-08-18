@@ -45,7 +45,7 @@ async def run_load_test_by_count(
         border_style="cyan"
     ))
     
-    # テスト画像の取得
+    # Get test images
     images_path = Path(test_images_dir)
     test_images = list(images_path.glob("*.jpg")) + list(images_path.glob("*.png"))
     
@@ -55,7 +55,7 @@ async def run_load_test_by_count(
     
     console.print(f"[green]テスト画像数: {len(test_images)}[/green]")
     
-    # APIM クライアントのインポート
+    # Import APIM client
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     
@@ -65,7 +65,7 @@ async def run_load_test_by_count(
         console.print("[red]エラー: apim_client モジュールが見つかりません[/red]")
         return None
     
-    # 設定読み込み（親ディレクトリの .env.apim を使用）
+    # Load configuration (using .env.apim from parent directory)
     import os
     env_file = Path(__file__).parent.parent / ".env.apim"
     if env_file.exists():
@@ -81,20 +81,20 @@ async def run_load_test_by_count(
     
     client = APIMOCRClient(config, console)
     
-    # 結果格納
+    # Store results
     results: List[RequestResult] = []
     start_time = time.time()
     
-    # セマフォで並行数を制御
+    # Control concurrency with semaphore
     semaphore = asyncio.Semaphore(max_workers)
     
-    # クライアントセッションを開始
+    # Start client session
     async with client:
         
         async def process_request(request_id: int) -> RequestResult:
             """1つのリクエストを処理"""
             async with semaphore:
-                # ランダムに画像を選択
+                # Select image randomly
                 import random
                 image_path = random.choice(test_images)
                 
@@ -119,7 +119,7 @@ async def run_load_test_by_count(
                         error=str(e)
                     )
         
-        # プログレスバー付きで実行
+        # Execute with progress bar
         with Progress(
             SpinnerColumn(),
             *Progress.get_default_columns(),
@@ -132,7 +132,7 @@ async def run_load_test_by_count(
                 total=total_requests
             )
             
-            # 全リクエストを並行実行
+            # Execute all requests concurrently
             tasks = [process_request(i) for i in range(total_requests)]
             
             for coro in asyncio.as_completed(tasks):
@@ -142,11 +142,11 @@ async def run_load_test_by_count(
     
     total_duration = time.time() - start_time
     
-    # 統計計算
+    # Calculate statistics
     successful = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
     
-    # エラー集計
+    # Aggregate errors
     error_counts = {}
     for r in failed:
         error_msg = r.error or "Unknown error"
@@ -165,17 +165,17 @@ async def run_load_test_by_count(
         "error_summary": error_counts
     }
     
-    # バックエンド使用状況
+    # Backend usage
     backend_counts = {}
     for r in successful:
         backend_counts[r.backend] = backend_counts.get(r.backend, 0) + 1
     
     stats["backend_usage"] = backend_counts
     
-    # 結果表示
+    # Display results
     display_results(stats, backend_counts, error_counts)
     
-    # 結果をファイルに保存
+    # Save results to file
     output_file = f"scenario_b_load_test_{int(time.time())}.json"
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(stats, f, indent=2, ensure_ascii=False)
@@ -192,7 +192,7 @@ def display_results(stats: Dict[str, Any], backend_counts: Dict[str, int], error
     console.print("[bold cyan]📊 Scenario B 負荷テスト結果[/bold cyan]")
     console.print("="*60)
     
-    # メイン統計
+    # Main statistics
     table = Table(title="総合統計", show_header=True, header_style="bold magenta")
     table.add_column("メトリクス", style="cyan")
     table.add_column("値", justify="right", style="green")
@@ -208,7 +208,7 @@ def display_results(stats: Dict[str, Any], backend_counts: Dict[str, int], error
     
     console.print(table)
     
-    # エラーサマリー
+    # Error summary
     if error_counts:
         console.print("\n[bold red]❌ エラーサマリー[/bold red]")
         error_table = Table(show_header=True, header_style="bold red")
@@ -219,7 +219,7 @@ def display_results(stats: Dict[str, Any], backend_counts: Dict[str, int], error
         total_errors = sum(error_counts.values())
         for error, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
             percentage = count / total_errors * 100
-            # エラーメッセージを短縮
+            # Shorten error message
             short_error = error[:80] + "..." if len(error) > 80 else error
             error_table.add_row(short_error, f"{count:,}", f"{percentage:.1f}%")
         
@@ -227,7 +227,7 @@ def display_results(stats: Dict[str, Any], backend_counts: Dict[str, int], error
     
     console.print(table)
     
-    # バックエンド使用状況
+    # Backend usage
     if backend_counts:
         console.print("\n[bold cyan]🏠 バックエンド使用状況:[/bold cyan]")
         for backend, count in sorted(backend_counts.items(), key=lambda x: x[1], reverse=True):
@@ -262,7 +262,7 @@ def main():
     
     args = parser.parse_args()
     
-    # 負荷テスト実行
+    # Execute load test
     try:
         asyncio.run(run_load_test_by_count(
             total_requests=args.total_requests,

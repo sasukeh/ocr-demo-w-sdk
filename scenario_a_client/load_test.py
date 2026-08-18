@@ -17,7 +17,7 @@ from typing import List
 import aiofiles
 from dotenv import load_dotenv
 
-# 相対インポート
+# Relative import
 from client import create_client
 from metrics import MetricsCollector
 from rich.console import Console
@@ -40,7 +40,7 @@ async def get_test_images(images_dir: str) -> List[Path]:
         console.print(f"[red]画像ディレクトリが見つかりません: {images_dir}[/red]")
         return []
     
-    # 対応画像形式
+    # Supported image formats
     extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']
     images = []
     
@@ -61,21 +61,21 @@ async def worker(worker_id: int, client, image_queue: asyncio.Queue, metrics: Me
     
     while True:
         try:
-            # タイムアウト付きでキューから取得
+            # Get from queue with timeout
             image_data, image_name = await asyncio.wait_for(image_queue.get(), timeout=1.0)
             
             request_start = time.time()
             
             try:
-                # OCR実行（環境変数で同期/非同期を選択）
+                # Execute OCR (sync/async selected by environment variable)
                 use_sync = os.getenv('USE_SYNC_API', 'false').lower() == 'true'
                 result, metadata = await client.ocr_with_fallback(image_data, use_sync=use_sync)
                 
-                # メトリクス記録
+                # Record metrics
                 final_endpoint = metadata.get('final_endpoint', 'unknown')
                 success = result is not None
                 
-                # 最後の試行の情報を取得
+                # Get last attempt information
                 last_attempt = metadata['attempts'][-1] if metadata['attempts'] else {}
                 status_code = last_attempt.get('status')
                 latency_ms = last_attempt.get('latency_ms', 0)
@@ -89,7 +89,7 @@ async def worker(worker_id: int, client, image_queue: asyncio.Queue, metrics: Me
                     attempt_count=metadata.get('total_attempts', 1)
                 )
                 
-                # 結果ログ
+                # Log result
                 if success:
                     console.print(f"[green]Worker-{worker_id}: {image_name} -> {final_endpoint} ({latency_ms}ms)[/green]")
                 else:
@@ -97,7 +97,7 @@ async def worker(worker_id: int, client, image_queue: asyncio.Queue, metrics: Me
                     console.print(f"[red]Worker-{worker_id}: {image_name} -> FAILED ({error_msg})[/red]")
                 
             except Exception as e:
-                # 予期しないエラー
+                # Unexpected error
                 metrics.record_request(
                     endpoint='unknown',
                     success=False,
@@ -109,14 +109,14 @@ async def worker(worker_id: int, client, image_queue: asyncio.Queue, metrics: Me
                 )
                 console.print(f"[red]Worker-{worker_id}: {image_name} -> EXCEPTION ({e})[/red]")
             
-            # プログレス更新
+            # Update progress
             progress.update(task_id, advance=1)
             
-            # キュータスク完了
+            # Queue task completed
             image_queue.task_done()
             
         except asyncio.TimeoutError:
-            # キューが空 = 全てのリクエスト処理完了
+            # Queue empty = all requests processed
             break
         except Exception as e:
             console.print(f"[red]Worker-{worker_id} エラー: {e}[/red]")
@@ -133,7 +133,7 @@ async def run_load_test(images_dir: str, target_rps: float, duration_sec: int,
     console.print(f"実行時間: {duration_sec}秒")
     console.print(f"並行ワーカー数: {concurrent_workers}")
     
-    # テスト画像読み込み
+    # Load test images
     image_files = await get_test_images(images_dir)
     if not image_files:
         console.print("[red]テスト用画像が見つかりません[/red]")
@@ -141,30 +141,30 @@ async def run_load_test(images_dir: str, target_rps: float, duration_sec: int,
     
     console.print(f"[green]テスト画像数: {len(image_files)}[/green]")
     
-    # クライアント作成
+    # Create client
     client = await create_client()
     metrics = MetricsCollector()
     
-    # 総リクエスト数計算
+    # Calculate total request count
     total_requests = int(target_rps * duration_sec)
     console.print(f"総リクエスト数: {total_requests}")
     
-    # 画像キューとプログレス
+    # Image queue and progress
     image_queue = asyncio.Queue()
     
     with Progress() as progress:
         task_id = progress.add_task("OCR処理中...", total=total_requests)
         
-        # リクエスト生成タスク
+        # Request generation task
         async def request_generator():
             interval = 1.0 / target_rps
             
             for i in range(total_requests):
-                # ラウンドロビンで画像選択
+                # Select image with round-robin
                 image_file = image_files[i % len(image_files)]
                 
                 try:
-                    # 画像データ読み込み
+                    # Load image data
                     image_data = await load_image(image_file)
                     await image_queue.put((image_data, image_file.name))
                     
@@ -232,7 +232,7 @@ def main(images: str, rps: float, duration: int, workers: int, env_file: str):
         sys.exit(1)
     
     try:
-        # 負荷テスト実行
+        # Execute load test
         results = asyncio.run(run_load_test(images, rps, duration, workers))
         
         # 簡易判定結果
